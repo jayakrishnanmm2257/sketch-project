@@ -1,0 +1,15 @@
+# Ignore the virtual environment
+venv/
+
+# Ignore the heavy dataset
+data/
+
+# Ignore generated results
+gan_outputs/
+
+# Ignore Python cache files (generated automatically)
+__pycache__/
+*.pyc
+
+# Optional: Ignore huge model files if they are >100MB
+# *.pth
