@@ -11,15 +11,15 @@ from tqdm import tqdm
 import numpy as np
 
 # --- 1. CONFIGURATION ---
-DATASET_CSV = 'sketch_descriptions.csv'
-SKETCH_DIR = r'C:\Users\krish\Downloads\Sketch Project\data\CUHK\sketches' # IMPORTANT: Update this path
+DATASET_CSV = 'sketch_descriptions_original.csv'
+SKETCH_DIR = 'data/matched_sketches_original' # IMPORTANT: Update this path
 OUTPUT_DIR = 'gan_outputs' # Folder to save generated images
-NUM_EPOCHS = 2000 # GANs need many epochs. Start with 300-500 for a test.
+NUM_EPOCHS = 800 
 BATCH_SIZE = 16 # Keep this low due to small dataset and model size
 LEARNING_RATE = 0.0002
 BETA1 = 0.5 # A standard hyperparameter for the Adam optimizer in GANs
 LATENT_DIM = 100 # Size of the random noise vector
-IMAGE_SIZE = 64 # Size of images to be generated (must be a power of 2)
+IMAGE_SIZE = 256 # Size of images to be generated
 CHANNELS_IMG = 1 # Grayscale images
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -72,23 +72,26 @@ class SketchDataset(Dataset):
 # --- 3. MODELS (GENERATOR & DISCRIMINATOR) ---
 
 class Generator(nn.Module):
-    def __init__(self, noise_dim, label_dim, channels_img):
+    def __init__(self, noise_dim, label_dim, channels_img, image_size):
         super(Generator, self).__init__()
         self.net = nn.Sequential(
             # Input: noise_dim + label_dim -> output size 4x4
-            self._block(noise_dim + label_dim, 1024, 4, 1, 0),
-            self._block(1024, 512, 4, 2, 1), # 8x8
-            self._block(512, 256, 4, 2, 1), # 16x16
-            self._block(256, 128, 4, 2, 1), # 32x32
-            nn.ConvTranspose2d(128, channels_img, kernel_size=4, stride=2, padding=1), # 64x64
+            self._block(noise_dim + label_dim, 1024 * 2, 4, 1, 0),  # 4x4
+            self._block(1024 * 2, 1024, 4, 2, 1), # 8x8
+            self._block(1024, 512, 4, 2, 1), # 16x16
+            self._block(512, 256, 4, 2, 1), # 32x32
+            self._block(256, 128, 4, 2, 1), # 64x64
+            self._block(128, 64, 4, 2, 1), # 128x128
+            nn.ConvTranspose2d(64, channels_img, kernel_size=4, stride=2, padding=1), # 256x256
             nn.Tanh() # Output values between -1 and 1
         )
+
 
     def _block(self, in_channels, out_channels, kernel_size, stride, padding):
         return nn.Sequential(
             nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU()
+            nn.LeakyReLU(0.2, inplace=True)
         )
     
     def forward(self, noise, labels):
@@ -100,17 +103,21 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, channels_img, label_dim):
+    def __init__(self, channels_img, label_dim, image_size):
         super(Discriminator, self).__init__()
-        self.label_embedding = nn.Linear(label_dim, IMAGE_SIZE*IMAGE_SIZE)
+        self.image_size = image_size
+        self.label_embedding = nn.Linear(label_dim, image_size*image_size)
         
         self.net = nn.Sequential(
-            # Input: channels_img + 1 (for label channel) -> 32x32
-            self._block(channels_img + 1, 128, 4, 2, 1),
-            self._block(128, 256, 4, 2, 1), # 16x16
-            self._block(256, 512, 4, 2, 1), # 8x8
-            self._block(512, 1024, 4, 2, 1), # 4x4
-            nn.Conv2d(1024, 1, kernel_size=4, stride=2, padding=0), # 1x1
+            # Input: channels_img + 1 (for label channel) -> image_size (256x256)
+            nn.Conv2d(channels_img + 1, 64, kernel_size=4, stride=2, padding=1), # 128x128
+            nn.LeakyReLU(0.2, inplace=True),
+            self._block(64, 128, 4, 2, 1), # 64x64
+            self._block(128, 256, 4, 2, 1), # 32x32
+            self._block(256, 512, 4, 2, 1), # 16x16
+            self._block(512, 1024, 4, 2, 1), # 8x8
+            self._block(1024, 1024*2, 4, 2, 1), # 4x4
+            nn.Conv2d(1024*2, 1, kernel_size=4, stride=2, padding=0), # 1x1
             nn.Sigmoid() # Output a probability
         )
         
@@ -123,7 +130,7 @@ class Discriminator(nn.Module):
         
     def forward(self, x, labels):
         # Reshape labels and concatenate them to the image as an extra channel
-        label_embedding = self.label_embedding(labels).view(-1, 1, IMAGE_SIZE, IMAGE_SIZE)
+        label_embedding = self.label_embedding(labels).view(-1, 1, self.image_size, self.image_size)
         x = torch.cat([x, label_embedding], dim=1)
         return self.net(x)
 
@@ -139,8 +146,8 @@ dataset = SketchDataset(csv_file=DATASET_CSV, sketch_dir=SKETCH_DIR, transform=t
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # Initialize models
-gen = Generator(LATENT_DIM, dataset.vocab_size, CHANNELS_IMG).to(DEVICE)
-disc = Discriminator(CHANNELS_IMG, dataset.vocab_size).to(DEVICE)
+gen = Generator(LATENT_DIM, dataset.vocab_size, CHANNELS_IMG, IMAGE_SIZE).to(DEVICE)
+disc = Discriminator(CHANNELS_IMG, dataset.vocab_size, IMAGE_SIZE).to(DEVICE)
 
 # Optimizers
 opt_gen = optim.Adam(gen.parameters(), lr=LEARNING_RATE, betas=(BETA1, 0.999))

@@ -22,8 +22,8 @@ def get_model(num_attributes):
 # --- CONFIGURATION ---
 # IMPORTANT: Update these paths to your local folders
 MODEL_PATH = 'facial_attribute_classifier.pth'
-CUFS_PHOTOS_DIR = 'C:/Users/krish/Downloads/Sketch Project/data/CUHK/photos'
-OUTPUT_CSV_PATH = 'sketch_descriptions.csv'
+CUFS_PHOTOS_DIR = 'data/matched_photos_original'
+OUTPUT_CSV_PATH = 'sketch_descriptions_original.csv'
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Using device: {DEVICE}")

@@ -7,17 +7,20 @@ from torchvision.models import resnet34
 # --- You must include the Generator class definition ---
 # This should be the same class as in your train_gan.py script
 class Generator(nn.Module):
-    def __init__(self, noise_dim, label_dim, channels_img):
+    def __init__(self, noise_dim, label_dim, channels_img, image_size):
         super(Generator, self).__init__()
         self.net = nn.Sequential(
             # Input: noise_dim + label_dim -> output size 4x4
-            self._block(noise_dim + label_dim, 1024, 4, 1, 0),
+            self._block(noise_dim + label_dim, 1024, 4, 1, 0),  # 4x4
             self._block(1024, 512, 4, 2, 1), # 8x8
             self._block(512, 256, 4, 2, 1), # 16x16
             self._block(256, 128, 4, 2, 1), # 32x32
-            nn.ConvTranspose2d(128, channels_img, kernel_size=4, stride=2, padding=1), # 64x64
+            self._block(128, 64, 4, 2, 1), # 64x64
+            self._block(64, 32, 4, 2, 1), # 128x128
+            nn.ConvTranspose2d(32, channels_img, kernel_size=4, stride=2, padding=1), # 256x256
             nn.Tanh() # Output values between -1 and 1
         )
+
 
     def _block(self, in_channels, out_channels, kernel_size, stride, padding):
         return nn.Sequential(
@@ -39,7 +42,7 @@ VOCAB_PATH = 'vocab.json'
 OUTPUT_FILENAME = 'generated_sketch.png'
 LATENT_DIM = 100
 CHANNELS_IMG = 1
-IMAGE_SIZE = 64
+IMAGE_SIZE = 256
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- YOUR TEXT DESCRIPTION ---
@@ -63,7 +66,7 @@ for attr in attributes:
 
 # --- 2. Load Trained Generator ---
 print(f"Loading generator from {GENERATOR_PATH}...")
-gen = Generator(LATENT_DIM, vocab_size, CHANNELS_IMG).to(DEVICE)
+gen = Generator(LATENT_DIM, vocab_size, CHANNELS_IMG, IMAGE_SIZE).to(DEVICE)
 gen.load_state_dict(torch.load(GENERATOR_PATH, map_location=DEVICE))
 gen.eval() # Set to evaluation mode
 
