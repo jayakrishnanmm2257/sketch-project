@@ -1,83 +1,57 @@
 import torch
-import json
 from torchvision.utils import save_image
-import torch.nn as nn
-from torchvision.models import resnet34
+import os
+import sys
 
-# --- You must include the Generator class definition ---
-# This should be the same class as in your train_gan.py script
-class Generator(nn.Module):
-    def __init__(self, noise_dim, label_dim, channels_img, image_size):
-        super(Generator, self).__init__()
-        self.net = nn.Sequential(
-            # Input: noise_dim + label_dim -> output size 4x4
-            self._block(noise_dim + label_dim, 1024, 4, 1, 0),  # 4x4
-            self._block(1024, 512, 4, 2, 1), # 8x8
-            self._block(512, 256, 4, 2, 1), # 16x16
-            self._block(256, 128, 4, 2, 1), # 32x32
-            self._block(128, 64, 4, 2, 1), # 64x64
-            self._block(64, 32, 4, 2, 1), # 128x128
-            nn.ConvTranspose2d(32, channels_img, kernel_size=4, stride=2, padding=1), # 256x256
-            nn.Tanh() # Output values between -1 and 1
-        )
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from src import config
+from src.models import Generator
+from src.utils import load_vocab, text_to_labels
 
-    def _block(self, in_channels, out_channels, kernel_size, stride, padding):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU()
-        )
+def generate(text_description):
+    print(f"--- Generating Sketch ---")
+    print(f"Description: {text_description}")
     
-    def forward(self, noise, labels):
-        # Concatenate noise and labels
-        x = torch.cat([noise, labels], dim=1)
-        # Reshape to be used by convolutional layers
-        x = x.unsqueeze(2).unsqueeze(3)
-        return self.net(x)
+    # 1. Load Resources
+    if not os.path.exists(config.VOCAB_FILE):
+        print("Error: vocab.json not found. Train the model first.")
+        return
+    if not os.path.exists(config.GENERATOR_PATH):
+        print("Error: generator.pth not found. Train the model first.")
+        return
 
-# --- CONFIGURATION ---
-GENERATOR_PATH = 'generator.pth'
-VOCAB_PATH = 'vocab.json'
-OUTPUT_FILENAME = 'generated_sketch.png'
-LATENT_DIM = 100
-CHANNELS_IMG = 1
-IMAGE_SIZE = 256
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# --- YOUR TEXT DESCRIPTION ---
-# Use attribute names from your dataset. Separate them with a comma and a space.
-text_description = "Male, Black_Hair, No_Beard, Oval_Face, Wearing_Earrings"
-
-# --- 1. Load Vocabulary and Process Text ---
-print(f"Loading vocabulary from {VOCAB_PATH}...")
-with open(VOCAB_PATH, 'r') as f:
-    vocab = json.load(f)
-vocab_size = len(vocab)
-
-# Convert the text description into a multi-hot encoded vector
-label_vector = torch.zeros(1, vocab_size, device=DEVICE)
-attributes = [attr.strip() for attr in text_description.split(',')]
-for attr in attributes:
-    if attr in vocab:
-        label_vector[0, vocab[attr]] = 1
-    else:
-        print(f"Warning: Attribute '{attr}' not in vocabulary and will be ignored.")
-
-# --- 2. Load Trained Generator ---
-print(f"Loading generator from {GENERATOR_PATH}...")
-gen = Generator(LATENT_DIM, vocab_size, CHANNELS_IMG, IMAGE_SIZE).to(DEVICE)
-gen.load_state_dict(torch.load(GENERATOR_PATH, map_location=DEVICE))
-gen.eval() # Set to evaluation mode
-
-# --- 3. Generate and Save the Sketch ---
-print("Generating sketch...")
-with torch.no_grad():
-    # Create a random noise vector
-    noise = torch.randn(1, LATENT_DIM).to(DEVICE)
-    # Generate the image
-    generated_image = gen(noise, label_vector)
+    vocab = load_vocab(config.VOCAB_FILE)
     
-# Save the image
-save_image(generated_image, OUTPUT_FILENAME, normalize=True)
-print(f"Sketch saved to {OUTPUT_FILENAME}")
+    # 2. Prepare Model
+    gen = Generator(config.LATENT_DIM, len(vocab), config.CHANNELS_IMG, config.IMAGE_SIZE).to(config.DEVICE)
+    try:
+        gen.load_state_dict(torch.load(config.GENERATOR_PATH, map_location=config.DEVICE))
+    except RuntimeError as e:
+        print(f"Error loading model: {e}")
+        print("The architecture in src/models.py might not match the saved weights.")
+        return
+
+    gen.eval()
+
+    # 3. Process Input
+    label_vector = text_to_labels(text_description, vocab, config.DEVICE)
+    
+    # 4. Generate
+    with torch.no_grad():
+        noise = torch.randn(1, config.LATENT_DIM).to(config.DEVICE)
+        fake_img = gen(noise, label_vector)
+        
+        # Invert colors back to standard (Black ink on White background)
+        # Model output: Ink=High(1), BG=Low(-1)
+        # We want: Ink=Low(-1), BG=High(1)
+        fake_img = -fake_img
+        
+        save_image(fake_img, config.GENERATED_IMG_PATH, normalize=True)
+        print(f"Success! Saved to {config.GENERATED_IMG_PATH}")
+
+if __name__ == "__main__":
+    # Example usage
+    desc = "Male, Bald, Smiling, Black_Hair, Oval_Face"
+    generate(desc)

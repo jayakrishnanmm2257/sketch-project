@@ -1,89 +1,115 @@
 import torch
-import torch.nn as nn
-from torchvision.models import resnet34, ResNet34_Weights
 from torchvision import transforms
 from PIL import Image
 import pandas as pd
 import os
+import sys
 from tqdm import tqdm
 
-# --- Function Definition ---
-# Place the get_model function here, after the imports.
-def get_model(num_attributes):
-    # Initialize the ResNet34 architecture without pre-trained weights,
-    # as we will be loading our own trained weights.
-    model = resnet34(weights=None)
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Sequential(
-        nn.Linear(num_ftrs, num_attributes)
-    )
-    return model
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# --- CONFIGURATION ---
-# IMPORTANT: Update these paths to your local folders
-MODEL_PATH = 'facial_attribute_classifier.pth'
-CUFS_PHOTOS_DIR = 'data/matched_photos_original'
-OUTPUT_CSV_PATH = 'sketch_descriptions_original.csv'
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+from src import config
+from src.models import get_attribute_classifier
 
-print(f"Using device: {DEVICE}")
+def main():
+    print(f"--- Generating Descriptions on {config.DEVICE} ---")
+    
+    # 1. Load Model
+    if not os.path.exists(config.CLASSIFIER_PATH):
+        print(f"Error: Classifier weights not found at {config.CLASSIFIER_PATH}")
+        return
 
-# --- 1. Load the Trained Model ---
-# Now we call the get_model function we just defined
-model = get_model(num_attributes=40)
-# Load the weights, ensuring they are mapped to the correct device (CPU or GPU)
-model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device(DEVICE)))
-model.to(DEVICE)
-model.eval()  # IMPORTANT: Set model to evaluation mode
+    model = get_attribute_classifier(num_attributes=40, weights_path=config.CLASSIFIER_PATH, device=config.DEVICE)
+    model.to(config.DEVICE)
+    model.eval()
 
-# --- 2. Define Image Transformations ---
-# These MUST be identical to the transformations used during training
-data_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+    # 2. Define Image Transformations (Must match training of classifier)
+    data_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
 
-# --- 3. List the Attribute Names ---
-attribute_names = [
-    '5_o_Clock_Shadow', 'Arched_Eyebrows', 'Attractive', 'Bags_Under_Eyes', 'Bald',
-    'Bangs', 'Big_Lips', 'Big_Nose', 'Black_Hair', 'Blond_Hair', 'Blurry',
-    'Brown_Hair', 'Bushy_Eyebrows', 'Chubby', 'Double_Chin', 'Eyeglasses',
-    'Goatee', 'Gray_Hair', 'Heavy_Makeup', 'High_Cheekbones', 'Male',
-    'Mouth_Slightly_Open', 'Mustache', 'Narrow_Eyes', 'No_Beard', 'Oval_Face',
-    'Pale_Skin', 'Pointy_Nose', 'Receding_Hairline', 'Rosy_Cheeks',
-    'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings',
-    'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young'
-]
+    # 3. Attributes List (Standard CelebA)
+    attribute_names = [
+        '5_o_Clock_Shadow', 'Arched_Eyebrows', 'Attractive', 'Bags_Under_Eyes', 'Bald',
+        'Bangs', 'Big_Lips', 'Big_Nose', 'Black_Hair', 'Blond_Hair', 'Blurry',
+        'Brown_Hair', 'Bushy_Eyebrows', 'Chubby', 'Double_Chin', 'Eyeglasses',
+        'Goatee', 'Gray_Hair', 'Heavy_Makeup', 'High_Cheekbones', 'Male',
+        'Mouth_Slightly_Open', 'Mustache', 'Narrow_Eyes', 'No_Beard', 'Oval_Face',
+        'Pale_Skin', 'Pointy_Nose', 'Receding_Hairline', 'Rosy_Cheeks',
+        'Sideburns', 'Smiling', 'Straight_Hair', 'Wavy_Hair', 'Wearing_Earrings',
+        'Wearing_Hat', 'Wearing_Lipstick', 'Wearing_Necklace', 'Wearing_Necktie', 'Young'
+    ]
 
-# --- 4. Main Processing Loop ---
-results = []
-photo_filenames = os.listdir(CUFS_PHOTOS_DIR)
+    # Attributes to exclude because they are color-dependent or unreliable in grayscale/sketches
+    EXCLUDED_ATTRIBUTES = {
+        'Pale_Skin', 'Rosy_Cheeks', 'Blurry', 'Wearing_Lipstick', 'Heavy_Makeup', 'Attractive',
+        'Wearing_Necktie', 'Wearing_Necklace', 'Wearing_Hat'
+    }
 
-for filename in tqdm(photo_filenames, desc="Generating Descriptions"):
-    photo_path = os.path.join(CUFS_PHOTOS_DIR, filename)
+    # 4. Process Images
+    results = []
+    if not os.path.exists(config.MATCHED_PHOTOS_DIR):
+        print(f"Error: Photos directory not found at {config.MATCHED_PHOTOS_DIR}")
+        return
+        
+    photo_filenames = os.listdir(config.MATCHED_PHOTOS_DIR)
 
-    try:
-        image = Image.open(photo_path).convert('RGB')
-        image_tensor = data_transform(image).unsqueeze(0).to(DEVICE)
+    for filename in tqdm(photo_filenames, desc="Processing"):
+        photo_path = os.path.join(config.MATCHED_PHOTOS_DIR, filename)
 
-        # Disables gradient calculation for efficiency during inference
-        with torch.no_grad():
-            outputs = model(image_tensor)
-            preds = torch.sigmoid(outputs) > 0.5
+        try:
+            image = Image.open(photo_path).convert('RGB')
+            image_tensor = data_transform(image).unsqueeze(0).to(config.DEVICE)
 
-        predicted_attributes = [attribute_names[i] for i, pred in enumerate(preds.squeeze()) if pred]
-        description_string = ", ".join(predicted_attributes)
+            with torch.no_grad():
+                outputs = model(image_tensor)
+                # Lower threshold to capture more subtle attributes
+                preds = torch.sigmoid(outputs) > 0.3
 
-        # The CUFS dataset has photos and sketches with matching filenames
-        results.append([filename, description_string])
+            predicted_attributes = [
+                attribute_names[i] for i, pred in enumerate(preds.squeeze()) 
+                if pred and attribute_names[i] not in EXCLUDED_ATTRIBUTES
+            ]
+            
+            # --- Explicit Defaults (Fill in the blanks) ---
+            # 1. Gender (Existing logic)
+            if 'Male' not in predicted_attributes:
+                predicted_attributes.append('Female')
+            
+            # 2. Expression
+            if 'Smiling' not in predicted_attributes and 'Mouth_Slightly_Open' not in predicted_attributes:
+                predicted_attributes.append('Neutral_Expression')
 
-    except Exception as e:
-        print(f"Could not process {filename}. Error: {e}")
+            # 3. Nose
+            if 'Big_Nose' not in predicted_attributes and 'Pointy_Nose' not in predicted_attributes:
+                predicted_attributes.append('Average_Nose')
 
-# --- 5. Save the Results to a CSV File ---
-df = pd.DataFrame(results, columns=['sketch_filename', 'description'])
-df.to_csv(OUTPUT_CSV_PATH, index=False)
+            # 4. Eyewear
+            if 'Eyeglasses' not in predicted_attributes:
+                predicted_attributes.append('No_Eyeglasses')
 
-print(f"\nSuccessfully generated descriptions for {len(df)} images.")
-print(f"Results saved to {OUTPUT_CSV_PATH}")
+            # 5. Lips
+            if 'Big_Lips' not in predicted_attributes:
+                predicted_attributes.append('Average_Lips')
+
+            # 6. Eyebrows
+            if 'Arched_Eyebrows' not in predicted_attributes and 'Bushy_Eyebrows' not in predicted_attributes:
+                predicted_attributes.append('Average_Eyebrows')
+
+            description_string = ", ".join(predicted_attributes)
+
+            results.append([filename, description_string])
+
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
+
+    # 5. Save Results
+    df = pd.DataFrame(results, columns=['sketch_filename', 'description'])
+    df.to_csv(config.DESCRIPTIONS_FILE, index=False)
+    print(f"Saved descriptions to {config.DESCRIPTIONS_FILE}")
+
+if __name__ == "__main__":
+    main()
